@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PPE Compliance Detector</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+  <div class="max-w-6xl mx-auto px-4 py-8">
+    <header class="mb-6">
+      <h1 class="text-2xl font-semibold">PPE Compliance Detector</h1>
+      <p class="text-slate-400 text-sm mt-1">
+        Upload a video to detect people and their protective equipment in real time.
+      </p>
+    </header>
+
+    <section class="flex flex-wrap items-center gap-3 mb-6">
+      <input
+        id="video-input"
+        type="file"
+        accept=".mp4,.avi,.mov,.mkv"
+        class="block text-sm text-slate-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-indigo-600 file:text-white hover:file:bg-indigo-500 cursor-pointer"
+      />
+      <button
+        id="start-btn"
+        class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+        disabled
+      >
+        Start processing
+      </button>
+      <span id="status-badge" class="text-sm px-3 py-1 rounded-full bg-slate-800 text-slate-300">Idle</span>
+    </section>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div class="lg:col-span-2">
+        <div class="bg-slate-900 rounded-xl overflow-hidden border border-slate-800 aspect-video flex items-center justify-center">
+          <img id="stream-frame" class="w-full h-full object-contain hidden" alt="Live annotated stream" />
+          <p id="stream-placeholder" class="text-slate-500 text-sm">No stream yet — upload a video to begin.</p>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-4 content-start">
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
+          <p class="text-xs text-slate-400 uppercase tracking-wide">Detected</p>
+          <p id="count-detected" class="text-3xl font-semibold mt-1">0</p>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
+          <p class="text-xs text-slate-400 uppercase tracking-wide">Safe</p>
+          <p id="count-safe" class="text-3xl font-semibold mt-1 text-emerald-400">0</p>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
+          <p class="text-xs text-slate-400 uppercase tracking-wide">Compliance %</p>
+          <p id="count-compliance" class="text-3xl font-semibold mt-1">0%</p>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
+          <p class="text-xs text-slate-400 uppercase tracking-wide">Total Unique People</p>
+          <p id="count-total" class="text-3xl font-semibold mt-1">0</p>
+        </div>
+      </div>
+    </div>
+
+    <p id="error-banner" class="hidden mt-6 text-sm text-red-300 bg-red-950 border border-red-800 rounded-lg px-4 py-3"></p>
+  </div>
+
+  <script>
+    const videoInput = document.getElementById("video-input");
+    const startBtn = document.getElementById("start-btn");
+    const statusBadge = document.getElementById("status-badge");
+    const streamFrame = document.getElementById("stream-frame");
+    const streamPlaceholder = document.getElementById("stream-placeholder");
+    const errorBanner = document.getElementById("error-banner");
+
+    const countDetected = document.getElementById("count-detected");
+    const countSafe = document.getElementById("count-safe");
+    const countCompliance = document.getElementById("count-compliance");
+    const countTotal = document.getElementById("count-total");
+
+    let socket = null;
+
+    function setStatus(text, tone = "slate") {
+      const tones = {
+        slate: "bg-slate-800 text-slate-300",
+        blue: "bg-blue-950 text-blue-300",
+        green: "bg-emerald-950 text-emerald-300",
+        red: "bg-red-950 text-red-300",
+      };
+      statusBadge.className = `text-sm px-3 py-1 rounded-full ${tones[tone] || tones.slate}`;
+      statusBadge.textContent = text;
+    }
+
+    function showError(message) {
+      errorBanner.textContent = message;
+      errorBanner.classList.remove("hidden");
+    }
+
+    function clearError() {
+      errorBanner.classList.add("hidden");
+      errorBanner.textContent = "";
+    }
+
+    function resetCounters() {
+      countDetected.textContent = "0";
+      countSafe.textContent = "0";
+      countCompliance.textContent = "0%";
+      countTotal.textContent = "0";
+    }
+
+    videoInput.addEventListener("change", () => {
+      startBtn.disabled = !videoInput.files.length;
+    });
+
+    startBtn.addEventListener("click", async () => {
+      const file = videoInput.files[0];
+      if (!file) return;
+
+      clearError();
+      resetCounters();
+      startBtn.disabled = true;
+      videoInput.disabled = true;
+      setStatus("Uploading...", "blue");
+
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+
+        const res = await fetch("/upload", { method: "POST", body: formData });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.detail || `Upload failed (${res.status})`);
+        }
+        const { video_id } = await res.json();
+        openStream(video_id);
+      } catch (err) {
+        showError(err.message || "Upload failed.");
+        setStatus("Idle", "slate");
+        startBtn.disabled = false;
+        videoInput.disabled = false;
+      }
+    });
+
+    function openStream(videoId) {
+      setStatus("Processing...", "blue");
+      streamPlaceholder.classList.add("hidden");
+      streamFrame.classList.remove("hidden");
+
+      const proto = window.location.protocol === "https:" ? "wss" : "ws";
+      socket = new WebSocket(`${proto}://${window.location.host}/ws/${videoId}`);
+
+      socket.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+
+        if (msg.error) {
+          showError(msg.error);
+          setStatus("Error", "red");
+          socket.close();
+          return;
+        }
+
+        if (msg.done) {
+          setStatus("Done", "green");
+          finish();
+          return;
+        }
+
+        if (msg.frame) {
+          streamFrame.src = `data:image/jpeg;base64,${msg.frame}`;
+        }
+        if (msg.counts) {
+          countDetected.textContent = msg.counts.detected;
+          countSafe.textContent = msg.counts.safe;
+          countCompliance.textContent = `${msg.counts.compliance}%`;
+          countTotal.textContent = msg.counts.total_unique;
+        }
+      };
+
+      socket.onerror = () => {
+        showError("Connection error while streaming.");
+        setStatus("Error", "red");
+      };
+
+      socket.onclose = () => {
+        finish();
+      };
+    }
+
+    function finish() {
+      startBtn.disabled = false;
+      videoInput.disabled = false;
+      if (statusBadge.textContent === "Processing...") {
+        setStatus("Idle", "slate");
+      }
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+models/*.pt
+!models/.gitkeep
+
+violations/*
+!violations/.gitkeep
+
+static/icons/*.png

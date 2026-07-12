@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+ultralytics
+lap>=0.5.12
+supervision
+opencv-python
+python-multipart
+pillow
+numpy
+jinja2
